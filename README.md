@@ -1,2 +1,2 @@
-# Data_Science_Soumadeep
+# Data_Science
  Data Science Projects
