@@ -1,0 +1,314 @@
+-------------IMPORTANT: BEFORE CREATING ANY TABLE RUN THIS COMMAND-------------
+ADD JAR /opt/cloudera/parcels/CDH/lib/hive/lib/hive-hcatalog-core-1.1.0-cdh5.11.2.jar;
+
+-------------Pre Requisite befor Partitioning-------------
+SET hive.exec.max.dynamic.partitions=100000;
+
+SET hive.exec.max.dynamic.partitions.pernode=100000;
+
+-------------Creating and using the database-------------
+create database if not exists ss_case_study;
+
+use ss_case_study;
+
+-------------Creating external table and loading data-------------
+create external table if not exists tbl_nyc(
+VendorID int,
+tpep_pickup_datetime timestamp,
+tpep_dropoff_datetime timestamp,
+passenger_count int,
+trip_distance decimal(10,2),
+RatecodeID int,
+store_and_fwd_flag string,
+PULocationID int,
+DOLocationID int,
+payment_type int,
+fare_amount decimal(10,2),
+extra decimal(10,2),
+mta_tax decimal(10,2),
+tip_amount decimal(10,2),
+tolls_amount decimal(10,2),
+improvement_surcharge decimal(10,2),
+total_amount decimal(10,2))
+ROW FORMAT DELIMITED FIELDS TERMINATED BY ','
+STORED AS TEXTFILE
+LOCATION '/common_folder/nyc_taxi_data/'
+tblproperties ("skip.header.line.count"="1"); 
+
+------------- Query to check the data is inserted correctly -------------
+select * 
+from tbl_nyc limit 10;
+
+------------- Counting the total number of rows -------------
+select count(*) 
+from tbl_nyc;
+
+-- total 1174569 rows created in table
+
+------------- Basic Data Quality Checks -------------
+
+----1. Checking the records for each TPEP provided provided----
+select vendorid as TPEP_Provider, count(*) as count_records  
+from tbl_nyc
+group by vendorid;
+
+-- We have more records (~100000) from VeriFone Inc. (vendorid = 2) than from Creative Mobile Technologies, LLC (vendorid = 1)
+
+----2. Checking if records belongs to year other than 2017 and month other than November & December----
+select count(*) as count_inconsistent from tbl_nyc 
+where substr(tpep_pickup_datetime, 1, 7) not in('2017-11','2017-12');
+
+-- We see that there are 14 records that are not in the year 2017 and not for months November and December
+
+----3. Checking for null values----
+select count(*) from tbl_nyc where tpep_pickup_datetime is null;
+select count(*) from tbl_nyc where tpep_dropoff_datetime is null;
+select count(*) from tbl_nyc 
+where substr(tpep_pickup_datetime, 1, 7) in('2017-11','2017-12') and passenger_count is null;
+select count(*) from tbl_nyc
+where substr(tpep_pickup_datetime, 1, 7) in('2017-11','2017-12') and trip_distance is null;
+select count(*) from tbl_nyc
+where substr(tpep_pickup_datetime, 1, 7) in('2017-11','2017-12') and PULocationID is null;
+select count(*) from tbl_nyc
+where substr(tpep_pickup_datetime, 1, 7) in('2017-11','2017-12') and DOLocationID is null;
+select count(*) from tbl_nyc
+where substr(tpep_pickup_datetime, 1, 7) in('2017-11','2017-12') and vendorid is null;
+select count(*) from tbl_nyc
+where substr(tpep_pickup_datetime, 1, 7) in('2017-11','2017-12') and total_amount is null;
+
+
+-- There are no null values in the data that is likely to be mandatory for a trip detail
+
+----Checking passenger count----
+select passenger_count, count(*) from tbl_nyc 
+where substr(tpep_pickup_datetime, 1, 7) in('2017-11','2017-12') 
+group by passenger_count;
+
+----Checking for anomalies in trip distance,fare_amount,extra,tip_amount,tolls_amount,total_amount----
+select count(*) from tbl_nyc 
+where substr(tpep_pickup_datetime, 1, 7) in('2017-11','2017-12') and (trip_distance = 0 or trip_distance < 0);
+select count(*) from tbl_nyc 
+where substr(tpep_pickup_datetime, 1, 7) in('2017-11','2017-12') and fare_amount <= 0;
+select count(*) from tbl_nyc 
+where substr(tpep_pickup_datetime, 1, 7) in('2017-11','2017-12') and extra < 0;
+select count(*) from tbl_nyc 
+where substr(tpep_pickup_datetime, 1, 7) in('2017-11','2017-12') and tip_amount < 0;
+select count(*) from tbl_nyc 
+where substr(tpep_pickup_datetime, 1, 7) in('2017-11','2017-12') and tolls_amount < 0;
+select count(*) from tbl_nyc
+ where substr(tpep_pickup_datetime, 1, 7) in('2017-11','2017-12') and total_amount <= 0;
+ 
+-- We have anomolies in all of the above columns, trip_distnace has the highest number of data issues, around 7401 rows are faulty followed by passenger_count with around 6000 records having 0 as the value.
+
+----Checking for distinct values of RateCodeID,store_and_fwd_flag,payment_type,mta_tax,improvement_surcharge and their count----
+select RateCodeID, count(*) from tbl_nyc 
+where substr(tpep_pickup_datetime, 1, 7) in('2017-11','2017-12') 
+group by RateCodeID;
+select store_and_fwd_flag, count(*) from tbl_nyc 
+where substr(tpep_pickup_datetime, 1, 7) in('2017-11','2017-12') group by store_and_fwd_flag;
+select payment_type, count(*) from tbl_nyc 
+where substr(tpep_pickup_datetime, 1, 7) in('2017-11','2017-12') group by payment_type;
+select count(*) from tbl_nyc 
+where substr(tpep_pickup_datetime, 1, 7) in('2017-11','2017-12') and mta_tax not in (0.5, 0);
+select count(*) from tbl_nyc
+ where substr(tpep_pickup_datetime, 1, 7) in('2017-11','2017-12') and improvement_surcharge != 0.30;
+ 
+-- Other than payment_type and Store_and_fwd_flag, all other columns have anomolies. Seems like most payments are done using credit card. Most anomolies are seen in improvement_surcharge column (around 800)
+
+----Checking which Vendor is doing a bad job using different columns of the dataset----
+select vendorid, count(*) from tbl_nyc where substr(tpep_pickup_datetime, 1, 7) in('2017-11','2017-12') and fare_amount <= 0
+ group by vendorid;
+select vendorid, count(*) from tbl_nyc where substr(tpep_pickup_datetime, 1, 7) in('2017-11','2017-12') and extra < 0 
+group by vendorid;
+select vendorid, count(*) from tbl_nyc where substr(tpep_pickup_datetime, 1, 7) in('2017-11','2017-12') and mta_tax not in (0.5, 0) 
+group by vendorid;
+select vendorid, count(*) from tbl_nyc where substr(tpep_pickup_datetime, 1, 7) in('2017-11','2017-12') and tip_amount < 0 
+group by vendorid;
+select vendorid, count(*) from tbl_nyc where substr(tpep_pickup_datetime, 1, 7) in('2017-11','2017-12') and tolls_amount < 0
+ group by vendorid;
+select vendorid, count(*) from tbl_nyc where substr(tpep_pickup_datetime, 1, 7) in('2017-11','2017-12') and improvement_surcharge != 0.30 
+group by vendorid;
+select vendorid, count(*) from tbl_nyc where substr(tpep_pickup_datetime, 1, 7) in('2017-11','2017-12') and total_amount <= 0 
+group by vendorid;
+
+
+-- From the above we can conclude that Verifone Inc. is contributing to mojority of the faulty data in the data set. In contrast, faulty data from Creative Mobile Technologies, LLC is almost negligible and can be attributed to manual errors which are expected.
+
+
+-------------Creating a clean ORC partitioned table for analysis-------------
+
+----using the database----
+
+use ss_case_study;
+
+----Pre Requisite befor Partitioning----
+SET hive.exec.max.dynamic.partitions=100000;
+SET hive.exec.max.dynamic.partitions.pernode=100000;
+
+----Dropping table tbl_nyc_partition_orc in case if exists----
+drop table tbl_nyc_partition_orc;
+
+----Createing external table----
+create external table if not exists tbl_nyc_partition_orc (
+        vendorid int,
+        tpep_pickup_datetime string,
+        tpep_dropoff_datetime string,
+        passenger_count int,
+        trip_distance double,
+        ratecodeid int,
+        store_and_fwd_flag string ,
+        pulocationid int,
+        dolocationid int,
+        payment_type int,
+        fare_amount double,
+        extra double,
+        mta_tax double,     
+        tip_amount double,
+        tolls_amount double,
+        improvement_surcharge double,
+        total_amount double ) partitioned by (month int)
+stored as orc location '/user/klorofill29_gmail/ss_case_study_orc'
+tblproperties ("orc.compress"="SNAPPY");
+
+----Writing the clean data from external table tbl_nyc to tbl_nyc_partition_orc----
+insert overwrite table tbl_nyc_partition_orc partition(month)
+select vendorid, tpep_pickup_datetime, tpep_dropoff_datetime, passenger_count, trip_distance,
+ratecodeid, store_and_fwd_flag, pulocationid, dolocationid, payment_type, fare_amount, extra, mta_tax, 
+tip_amount, tolls_amount, improvement_surcharge, total_amount,
+month(tpep_pickup_datetime) as month
+from tbl_nyc 
+where passenger_count not in(0, 192) 
+and fare_amount > 0 
+and trip_distance > 0 
+and RateCodeID != 99
+and tip_amount >= 0 
+and improvement_surcharge = 0.30  
+and mta_tax in (0,0.5) 
+and tolls_amount >= 0 
+and extra >= 0
+and total_amount >= 0 
+and year(tpep_pickup_datetime) = 2017 
+and month(tpep_pickup_datetime) in (11,12);
+
+----Query to check data is imported correctly----
+select * from tbl_nyc_partition_orc limit 10;
+
+----Counting the total number of rows----
+select count(*) from tbl_nyc_partition_orc;
+
+-- after ignoring all the rows that do not have integrity, we have 1159746 rows that we will use for further analysis.
+-- original data has 1174569 rows. So we have 14823 faulty records in all.
+
+
+-------------Analysis-I-------------
+
+----1. Compare the overall average fare per trip for November and December
+select round(avg(fare_amount),2) as Avg_Fare, month as Month 
+from tbl_nyc_partition_orc 
+group by month;
+
+-- Avg tip is 13.06 in Nov and 12.85 in Dec. The difference is very less and can be considered to be almost the same in both the months.
+
+----2. Check if passenger prefers solo or with other people----
+select passenger_count, count(*) as no_of_trips, round((count(*)*100/1159746),4) as percentage
+ from tbl_nyc_partition_orc 
+group by passenger_count 
+order by no_of_trips desc;
+
+-- 70% of the trips made are solo trips, so it is safe to assume that most people prefer to travel alone
+
+----3. Finding the most preferred mode of payment----
+select payment_type, count(*) as no_of_transactions, round((count(*)*100/1159746),4) as percentage
+ from tbl_nyc_partition_orc
+ group by payment_type 
+order by no_of_transactions desc;
+
+-- ~67% of the payments made were through Credit card, this seems to be the preferred mode of payment
+
+----4. Checking the average tip paid per trip and comparing with the 25th, 50th and 75th percentiles----
+select round(avg(tip_amount),2) as avg_tip_per_trip,
+percentile_approx(tip_amount, 0.25) as 25th_percentile,  
+percentile_approx(tip_amount, 0.50) as 50th_percentile,
+percentile_approx(tip_amount, 0.75) as 75th_percentile 
+from tbl_nyc_partition_orc;
+
+-- average tip amount is 1.85, almost 25% of the trips were not tipped. However, at 50th percentile and 75th percentile we have average tip as 1.36 and 2.45 respectively
+-- The 50th percentile, also the median is 1.36, whereas the average is 1.85. Therefore the average seems a bit skewed to the higher side and we can say that most drivers are getting a tip lower than the average tip amount that is 1.85.
+
+----5. Checking what fraction of total trips have an extra charge is levied----
+select extra, count(*) as count, round((count(*)*100/1159746),4) as percentage 
+from (
+select case when extra > 0 then 'Extra charge Applied' else 'Extra Charge not Applied' 
+end  extra 
+from tbl_nyc_partition_orc ) K
+ group by extra 
+order by percentage desc;
+
+-- 46% of the trips have extra charges levied on them
+
+-------------Analysis-II-------------
+
+----1. Finding the correlation between the number of passengers and tip paid per trip----
+select corr(passenger_count, tip_amount) as correlation
+from tbl_nyc_partition_orc;
+select solo_mult,round(avg(tip_amount),4) as average_tip_amount from 
+(select case when passenger_count = 1 then 'Solo' else 'Multiple' end solo_mult,tip_amount 
+from tbl_nyc_partition_orc ) K 
+group by solo_mult;
+
+-- The correlation is almost 0, which means that the tip amount does not depend on the number of passengers. Moreover, when you calculate the average tip for solo trip and not-solo trips, it is around the same amount with is ~1.8.
+
+----2. Segregating the data into five segments of ‘tip paid’: [0-5), [5-10), [10-15) , [15-20) and >=20 and Calculating the percentage share of each bucket----
+select tip_grp, count(*) as count, round((count(*)*100/1159746),4) as percentage from
+(
+select case
+when tip_amount < 5 then "Between 0 and 5"
+when tip_amount >= 5 and tip_amount <10 then "Between 5 and 10"
+when tip_amount >= 10 and tip_amount <15 then "Between 10 and 15"
+when tip_amount >= 15 and tip_amount <20 then "Between 15 and 20"
+else "Greater than or equal to 20" end as tip_grp 
+from tbl_nyc_partition_orc
+) K
+ group by tip_grp 
+order by percentage desc;
+
+-- Maximum (92%) of the trips fall under the 0-5 bucket. Number of trips paying more than 5 tip amount drastically reduces.
+
+----3. Calculating speed and finding which month has greater average speed----
+select month,
+round(avg(trip_distance/((unix_timestamp(tpep_dropoff_datetime)-unix_timestamp(tpep_pickup_datetime) )/3600) ),2) as avg_speed 
+from tbl_nyc_partition_orc
+group by month; 
+
+-- both months have almost the same average speed, i.e ~11
+
+----4. Analysing the average speed of the most happening days of the year, i.e. 31st December (New year’s eve) and 25th December (Christmas) and comparing it with the overall average----
+
+--Overall Average Speed--
+select round(avg(trip_distance/((unix_timestamp(tpep_dropoff_datetime)-unix_timestamp(tpep_pickup_datetime) )/3600)),2) as overall_avg_speed
+ from tbl_nyc_partition_orc;
+
+--Average Speed on 31st Dec (New year’s eve)--
+select 
+round(avg(trip_distance/((unix_timestamp(tpep_dropoff_datetime)-unix_timestamp(tpep_pickup_datetime) )/3600)),2) as speed_new_year 
+from tbl_nyc_partition_orc 
+where month(tpep_pickup_datetime) = 12 and day(tpep_pickup_datetime) = 31;
+
+--Average Speed on 25th Dec (Christmas)--
+select 
+round(avg(trip_distance/((unix_timestamp(tpep_dropoff_datetime)-unix_timestamp(tpep_pickup_datetime) )/3600)),2) as speed_christmas 
+from tbl_nyc_partition_orc  
+where month(tpep_pickup_datetime) = 12 and day(tpep_pickup_datetime) = 25;
+
+
+-- the average speed of vehicle is around 11 units, however, there is an inrease in the speed during holidays, could be attributed to the fact that everyone is at home spending time with family and there is less traffic.
+-- The average is ~13 on 31st Dec and ~15 on 25th Dec.
+
+
+
+
+
+
+
+
+ 
